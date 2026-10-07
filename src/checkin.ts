@@ -25,14 +25,18 @@
  * - **Not a season**: the status document reports `active: false` outside a
  *   check-in campaign. That is a normal state, not an error.
  *
- * The module is deliberately side-effect free apart from its two requests: it
- * owns no timers, spawns no process, and writes nothing to disk. Scheduling and
- * configuration live in the plugin entry, and the browser half never sees the
- * token.
+ * The module is deliberately side-effect free apart from its two requests and
+ * the record written by {@link recordCheckIn}: it owns no timers, spawns no
+ * process, and never touches the credential. Scheduling and configuration live
+ * in the plugin entry, and the browser half never sees the token.
  *
  * @module dsh-workbuddy-connect/checkin
  */
 
+import { appendFile, mkdir } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { WorkBuddyCredential } from './auth.ts'
 import { billingBase, billingHeaders } from './upstream.ts'
 
@@ -41,6 +45,27 @@ const CHECKIN_TIMEOUT_MS = 30_000
 
 /** The upstream business code for "today is already claimed". */
 const ALREADY_CLAIMED_CODE = 10001
+
+/**
+ * Where each run's outcome is appended, inside the Harness home.
+ *
+ * A file, not just the host logger, because the host does not persist `info`
+ * lines to disk by default: a check-in that succeeded (or silently stopped
+ * working after an upstream change) would leave the user with no way to tell.
+ * The claim is the one thing this plugin does that changes account state, so it
+ * is the one thing that must be auditable after the fact.
+ *
+ * One line per run, JSON after a timestamp, so the file is both greppable and
+ * machine-readable. Nothing token-bearing is ever written: the result shape is
+ * sanitized by construction (see {@link checkIn}) and never carries a
+ * credential.
+ */
+export const WORKBUDDY_CHECKIN_LOG_FILENAME = '.workbuddy-checkin.log'
+
+/** Absolute path of the check-in log. */
+export function workbuddyCheckInLogPath(): string {
+  return join(resolveDshHome(), WORKBUDDY_CHECKIN_LOG_FILENAME)
+}
 
 /**
  * Outcome of one check-in attempt.
@@ -208,5 +233,28 @@ export function describeCheckIn(result: WorkBuddyCheckInResult): string {
       return 'no check-in campaign is running'
     case 'failed':
       return `failed: ${result.message}`
+  }
+}
+
+/**
+ * Append one run's outcome to the check-in log.
+ *
+ * Never throws and never rejects: the record is diagnostic, and a failed write
+ * must not turn a successful claim into a reported failure — nor an already
+ * contained failure into an unhandled rejection on a startup path.
+ *
+ * @param result - the outcome of one {@link checkIn} call.
+ * @param path - log path; defaults to {@link workbuddyCheckInLogPath}.
+ */
+export async function recordCheckIn(
+  result: WorkBuddyCheckInResult,
+  path: string = workbuddyCheckInLogPath(),
+): Promise<void> {
+  try {
+    const directory = dirname(path)
+    if (!existsSync(directory)) await mkdir(directory, { recursive: true })
+    await appendFile(path, `[${new Date().toISOString()}] ${JSON.stringify(result)}\n`, 'utf8')
+  } catch {
+    // Best-effort: the host logger still carries the outcome for this run.
   }
 }

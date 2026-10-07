@@ -1437,6 +1437,72 @@ declare class WorkBuddyVisibilityStore {
   private persist;
 }
 //#endregion
+//#region src/checkin.d.ts
+/**
+ * Where each run's outcome is appended, inside the Harness home.
+ *
+ * A file, not just the host logger, because the host does not persist `info`
+ * lines to disk by default: a check-in that succeeded (or silently stopped
+ * working after an upstream change) would leave the user with no way to tell.
+ * The claim is the one thing this plugin does that changes account state, so it
+ * is the one thing that must be auditable after the fact.
+ *
+ * One line per run, JSON after a timestamp, so the file is both greppable and
+ * machine-readable. Nothing token-bearing is ever written: the result shape is
+ * sanitized by construction (see {@link checkIn}) and never carries a
+ * credential.
+ */
+declare const WORKBUDDY_CHECKIN_LOG_FILENAME = ".workbuddy-checkin.log";
+/** Absolute path of the check-in log. */
+declare function workbuddyCheckInLogPath(): string;
+/**
+ * Outcome of one check-in attempt.
+ *
+ * `already` and `inactive` are successful, expected states — not failures —
+ * because both describe a service that answered correctly. Only `failed`
+ * carries a message, and its text is bounded before it reaches a log or the
+ * status document.
+ */
+type WorkBuddyCheckInResult = {
+  state: 'claimed';
+  credit: number;
+  streakDays?: number;
+  totalCredits?: number;
+} | {
+  state: 'already';
+  todayCredit?: number;
+  streakDays?: number;
+  totalCredits?: number;
+} | {
+  state: 'inactive';
+} | {
+  state: 'failed';
+  message: string;
+};
+/**
+ * Claim today's check-in for one credential.
+ *
+ * Always resolves — a failure is a `failed` result rather than a throw — so a
+ * caller firing this from a startup path can never have its own error handling
+ * driven by a network blip. Never logs or returns the token.
+ *
+ * @param credential - the resolved credential, already refreshed on demand.
+ */
+declare function checkIn(credential: WorkBuddyCredential): Promise<WorkBuddyCheckInResult>;
+/** One-line, token-free summary of a result, for the plugin log. */
+declare function describeCheckIn(result: WorkBuddyCheckInResult): string;
+/**
+ * Append one run's outcome to the check-in log.
+ *
+ * Never throws and never rejects: the record is diagnostic, and a failed write
+ * must not turn a successful claim into a reported failure — nor an already
+ * contained failure into an unhandled rejection on a startup path.
+ *
+ * @param result - the outcome of one {@link checkIn} call.
+ * @param path - log path; defaults to {@link workbuddyCheckInLogPath}.
+ */
+declare function recordCheckIn(result: WorkBuddyCheckInResult, path?: string): Promise<void>;
+//#endregion
 //#region src/probe-service.d.ts
 /** What the caller learns about a completed probe. */
 type WorkBuddyProbeStatus = {
@@ -1655,4 +1721,4 @@ declare function visibilityAccountOf(credential: Pick<WorkBuddyCredential, 'uid'
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { AI_VARIANT, type AppVersionInfo, CN_APP_VERSION_FILENAME, CN_VARIANT, type ChatIdentity, Config, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, type ResolveChatIdentityOptions, type UpstreamErrorKind, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, WORKBUDDY_VISIBILITY_FILENAME, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, WorkBuddyVisibilityStore, appUserAgent, apply, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, desktopAuthCandidatesFor, fallbackChatIdentity, fingerprintModel, inject, installedAppVersion, isHeartbeatProcessAlive, modelWithCurrentPromotion, name, normalizeCredits, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, resolveAppVersion, resolveChatIdentity, validAppVersion, validCliVersion, variantFor, visibilityAccountOf, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyProbePath, workbuddyVisibilityPath };
+export { AI_VARIANT, type AppVersionInfo, CN_APP_VERSION_FILENAME, CN_VARIANT, type ChatIdentity, Config, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, type ResolveChatIdentityOptions, type UpstreamErrorKind, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_CHECKIN_LOG_FILENAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, WORKBUDDY_VISIBILITY_FILENAME, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCheckInResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, WorkBuddyVisibilityStore, appUserAgent, apply, chatUserAgent, checkIn, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, describeCheckIn, desktopAuthCandidatesFor, fallbackChatIdentity, fingerprintModel, inject, installedAppVersion, isHeartbeatProcessAlive, modelWithCurrentPromotion, name, normalizeCredits, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, recordCheckIn, regionOf, resolveAppVersion, resolveChatIdentity, validAppVersion, validCliVersion, variantFor, visibilityAccountOf, workbuddyCatalogPath, workbuddyCheckInLogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyProbePath, workbuddyVisibilityPath };

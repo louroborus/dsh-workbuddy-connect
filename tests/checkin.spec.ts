@@ -1,5 +1,8 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { checkIn, describeCheckIn } from '../src/checkin.ts'
+import { checkIn, describeCheckIn, recordCheckIn, WORKBUDDY_CHECKIN_LOG_FILENAME } from '../src/checkin.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 
 /**
@@ -173,5 +176,46 @@ describe('workbuddy daily check-in', () => {
     expect(describeCheckIn({ state: 'already' })).toContain('already')
     expect(describeCheckIn({ state: 'inactive' })).toContain('no check-in campaign')
     expect(describeCheckIn({ state: 'failed', message: 'boom' })).toContain('boom')
+  })
+})
+
+describe('the check-in record', () => {
+  const dirs: string[] = []
+  afterEach(() => { dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })) })
+
+  /** A path inside a fresh temporary directory, created lazily by the callee. */
+  function tempLog(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wb-checkin-log-'))
+    dirs.push(dir)
+    return join(dir, 'nested', WORKBUDDY_CHECKIN_LOG_FILENAME)
+  }
+
+  it('creates the directory and appends one JSON line per run', async () => {
+    const path = tempLog()
+    await recordCheckIn({ state: 'claimed', credit: 100 }, path)
+    await recordCheckIn({ state: 'already' }, path)
+    const lines = readFileSync(path, 'utf8').trim().split('\n')
+    expect(lines).toHaveLength(2)
+    expect(JSON.parse(lines[0]!.replace(/^\[[^\]]+\]\s*/, ''))).toEqual({ state: 'claimed', credit: 100 })
+    expect(JSON.parse(lines[1]!.replace(/^\[[^\]]+\]\s*/, ''))).toEqual({ state: 'already' })
+  })
+
+  it('records a timestamp that parses back to this run', async () => {
+    const path = tempLog()
+    const before = Date.now()
+    await recordCheckIn({ state: 'inactive' }, path)
+    const stamp = /^\[([^\]]+)\]/u.exec(readFileSync(path, 'utf8').trim())?.[1]
+    expect(stamp).toBeDefined()
+    const recorded = Date.parse(stamp!)
+    expect(Number.isNaN(recorded)).toBe(false)
+    expect(recorded).toBeGreaterThanOrEqual(before - 1_000)
+    expect(recorded).toBeLessThanOrEqual(Date.now() + 1_000)
+  })
+
+  it('never rejects when the log cannot be written', async () => {
+    // A directory where the file must go, so `appendFile` must fail.
+    const dir = mkdtempSync(join(tmpdir(), 'wb-checkin-log-'))
+    dirs.push(dir)
+    await expect(recordCheckIn({ state: 'already' }, dir)).resolves.toBeUndefined()
   })
 })

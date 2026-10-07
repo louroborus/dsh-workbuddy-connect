@@ -36,7 +36,7 @@ import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-pat
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { legacySettingsOf } from './legacy-settings.ts'
-import { checkIn, describeCheckIn } from './checkin.ts'
+import { checkIn, describeCheckIn, recordCheckIn } from './checkin.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
@@ -57,6 +57,14 @@ export {
   WorkBuddyVisibilityStore,
   workbuddyVisibilityPath,
 } from './visibility-store.ts'
+export {
+  checkIn,
+  describeCheckIn,
+  recordCheckIn,
+  workbuddyCheckInLogPath,
+  WORKBUDDY_CHECKIN_LOG_FILENAME,
+  type WorkBuddyCheckInResult,
+} from './checkin.ts'
 export {
   fingerprintModel,
   WorkBuddyProbeStore,
@@ -1152,6 +1160,11 @@ export function apply(ctx: Context, config: Config): void {
       const credential = await runtime.store.resolve()
       if (stopped) return
       const result = await checkIn(credential)
+      if (stopped) return
+      // Persisted before the logger call: the host does not write `info` lines
+      // to disk by default, so this file is the only durable record that the
+      // claim ran — and the only way to notice it silently stopping later.
+      await recordCheckIn(result)
       if (stopped) return
       const summary = `dsh-workbuddy-connect: check-in ${describeCheckIn(result)}`
       if (result.state === 'failed') ctx.logger.warn(summary)
