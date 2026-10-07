@@ -362,7 +362,15 @@ function chatBase(credential: WorkBuddyCredential): string {
   return regionOf(credential.domain) === 'global' ? GLOBAL_BASE : CN_CHAT_BASE
 }
 
-function billingBase(credential: WorkBuddyCredential): string {
+/**
+ * The billing host for a credential's region.
+ *
+ * Exported for the check-in module: the check-in routes are served by this same
+ * host (measured 2026-10-07 — `copilot.tencent.com`, `www.codebuddy.cn`, and
+ * `www.workbuddy.cn` all answer the identical document), so the region decision
+ * must stay in one place rather than being respelled by a second caller.
+ */
+export function billingBase(credential: WorkBuddyCredential): string {
   return regionOf(credential.domain) === 'global' ? GLOBAL_BASE : CN_BILLING_BASE
 }
 
@@ -420,8 +428,14 @@ function refreshHeaders(credential: WorkBuddyCredential): Record<string, string>
   return headers
 }
 
-/** Billing request headers. */
-function billingHeaders(credential: WorkBuddyCredential): Record<string, string> {
+/**
+ * Billing request headers.
+ *
+ * Exported alongside {@link billingBase} for the check-in module, which must
+ * present the same identity as the credit read: the check-in routes are billing
+ * routes, and a second header builder is how the two would drift.
+ */
+export function billingHeaders(credential: WorkBuddyCredential): Record<string, string> {
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${credential.accessToken}`,
     'Accept': 'application/json',

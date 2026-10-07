@@ -1619,6 +1619,16 @@ interface Config {
   probeConsent?: boolean;
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean;
+  /**
+   * Claim the WorkBuddy daily check-in credit automatically.
+   *
+   * Off by default, like every other path that sends a request the user did not
+   * ask for: enabling it makes the plugin claim a real reward on the account's
+   * behalf at startup and once a day thereafter. The claim is idempotent
+   * upstream (a second claim for the same day answers "already claimed"), so
+   * the worst case of an extra run is one wasted request.
+   */
+  autoCheckin?: boolean;
 }
 declare const Config: z<Config>;
 /**

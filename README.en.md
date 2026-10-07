@@ -32,6 +32,8 @@ The same UI works unchanged inside the DSH 0.1.5 settings cards:
 
 - **Enterprise credit**: on the CN product, enterprise accounts (non-empty `enterpriseId`) read their cycle quota from the enterprise billing endpoint, and the card shows an "enterprise quota" row with the cycle reset time.
 
+- **Daily check-in (optional, off by default)**: when enabled, the plugin claims WorkBuddy's daily check-in credit automatically at DSH startup, and again after the host stays up across midnight. See the "Daily check-in" section below; read its two caveats first — it sends requests as your account, and the endpoint is reverse engineered from the desktop app.
+
 - **Rate**: every model name carries its credits multiplier (e.g. `GLM-5.2 · x0.79`, `Hy3 · x0.00`) in both the `/model` popup and the composer's model dropdown. The rate is display-only and never affects requests.
 
 - **Promo badges**: promo badges (`限时免费`, `夜间折扣`) ride the model name itself (e.g. `Hy4 preview · x0.00 · 限时免费`), visible wherever you pick a model; the status card also collects currently-discounted models. Per the WorkBuddy service data, synced each time DSH starts. The international version's promotions come from the service's `modelPromotions` (which carry an effective window). Once a promotion lapses its badge is withdrawn; because the service writes the discounted value into the model's own rate field, the original price cannot be reconstructed, so that model then reports "price unavailable — refresh to update" rather than repeating the discounted rate or claiming the model is free.
@@ -51,6 +53,49 @@ Information about WorkBuddy models' reasoning levels is currently split between 
 Testing also found that some models accept the `reasoning_effort` parameter while ignoring unknown values and falling back to their default behavior. A successful request alone therefore does not prove that a level is actually usable.
 
 For models without declared levels, Web and Desktop instead use user-authorized, on-demand detection: it first confirms that the upstream validates the parameter, then checks which standard levels it accepts. The check sends a few requests and may consume credit. Its result means only that the upstream currently accepts that level; it does not promise a particular change in reasoning quality, speed, or credit use.
+
+## Daily check-in
+
+> [!NOTE]
+> **Off by default.** When enabled, the plugin sends real reward-claiming requests as your account — the only feature here that **changes account state** (every other path only reads models, credit, and account information). Read this section before turning it on.
+
+The WorkBuddy client runs a daily check-in activity that grants credit. With `autoCheckin` enabled, the plugin claims the current day's credit at DSH startup, and once more later that day if the host stays up across local midnight (it watches whether the local calendar day changed rather than using a fixed 24-hour interval, so it cannot drift with uptime).
+
+**How to enable**
+
+Set it in the `workbuddy` section of `settings.yaml`:
+
+```yaml
+workbuddy:
+  autoCheckin: true
+```
+
+On DSH `0.1.5` / `0.1.6` the corresponding section of the settings card can be edited directly.
+
+**Endpoints and host**
+
+The claim uses the two endpoints the desktop app's own check-in button calls, under the billing routes:
+
+- `POST /v2/billing/meter/checkin-activity-status` — read-only; whether today is already claimed, the streak, and the running totals.
+- `POST /v2/billing/meter/daily-checkin` — claims the day's credit.
+
+Both reuse the same credential and request headers as the credit read (`billingBase` / `billingHeaders`), so no second credential path exists. All three of `copilot.tencent.com`, `www.codebuddy.cn`, and `www.workbuddy.cn` returned byte-identical documents when measured on 2026-10-07, so the plugin follows the existing per-region billing host and introduces no new base URL.
+
+**Why running it repeatedly is safe**
+
+The claim is idempotent per day: a repeat claim answers `HTTP 400 + code 10001` (`今天已签到，请明天再来`) or an empty body, and the plugin treats both shapes as "already claimed today" rather than a failure. A startup trigger plus a second trigger after midnight therefore costs at most one wasted request — it cannot double-grant, and it cannot record a normal state as an error.
+
+By the same token, `active: false` (no check-in campaign running) is a normal state, not an error.
+
+**Failure handling**
+
+A failed claim never affects the plugin: the whole path is wrapped, the outcome goes to the host log (`warn` on failure, `info` on success), and the next scheduled run retries. When signed out it is skipped silently as a normal state. Failure text is stripped of token material before it is logged, so the access token never reaches a log.
+
+**Known boundaries**
+
+- **CN product only**: the check-in activity belongs to the CN WorkBuddy; WorkBuddy AI has no equivalent, and the plugin never points an international credential at a CN route.
+- **Depends on a reverse-engineered endpoint**: like the credit endpoints, this one was read out of the desktop app's `app.asar` and can break when the service changes. When it does, it shows up as `check-in failed` in the log; nothing else is affected.
+- **Check-in credit only**: the rest of the growth center (Buddy travel, tasks, lottery, makeup cards) is out of scope.
 
 ## Install
 

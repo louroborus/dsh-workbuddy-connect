@@ -36,6 +36,7 @@ import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-pat
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { legacySettingsOf } from './legacy-settings.ts'
+import { checkIn, describeCheckIn } from './checkin.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
@@ -221,6 +222,16 @@ function credentialPollMs(): number {
  */
 const CATALOG_RETRY_SWEEPS = 10
 
+/**
+ * How often the check-in schedule re-examines the local calendar day.
+ *
+ * Fifteen minutes is the resolution of "the day rolled over": coarse enough
+ * that a long-running host does no meaningful work, fine enough that a claim
+ * lands shortly after midnight rather than hours later. The timer does nothing
+ * at all until the day actually changes.
+ */
+const CHECKIN_DAY_POLL_MS = 15 * 60 * 1000
+
 /** Plugin configuration. */
 export interface Config {
   /** Explicit WorkBuddy (CN) desktop auth-file path, overriding env and platform defaults. */
@@ -235,6 +246,16 @@ export interface Config {
   probeConsent?: boolean
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean
+  /**
+   * Claim the WorkBuddy daily check-in credit automatically.
+   *
+   * Off by default, like every other path that sends a request the user did not
+   * ask for: enabling it makes the plugin claim a real reward on the account's
+   * behalf at startup and once a day thereafter. The claim is idempotent
+   * upstream (a second claim for the same day answers "already claimed"), so
+   * the worst case of an extra run is one wasted request.
+   */
+  autoCheckin?: boolean
 }
 
 /** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
@@ -246,12 +267,16 @@ const PROBE_CONSENT_FIELD = z.boolean().default(false)
   .description('Authorize reasoning-effort probes (each probe sends real requests that may consume credit)')
 const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true)
   .description('Use the largest context window declared by WorkBuddy AI when alternatives are available (on by default)')
+/** Automatic daily check-in (shared by the plugin schema and the CN section). */
+const AUTO_CHECKIN_FIELD = z.boolean().default(false)
+  .description('Claim the WorkBuddy daily check-in credit automatically at startup and once a day (off by default)')
 
 export const Config: z<Config> = z.object({
   authFile: AUTH_FILE_FIELD,
   authFileAI: AUTH_FILE_AI_FIELD,
   probeConsent: PROBE_CONSENT_FIELD,
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
+  autoCheckin: AUTO_CHECKIN_FIELD,
 })
 
 /**
@@ -266,6 +291,7 @@ export const Config: z<Config> = z.object({
 const CN_SECTION: z<Config> = z.object({
   authFile: AUTH_FILE_FIELD,
   probeConsent: PROBE_CONSENT_FIELD,
+  autoCheckin: AUTO_CHECKIN_FIELD,
 })
 
 /** The international card's settings section and its context-window preference. */
@@ -621,6 +647,15 @@ export function apply(ctx: Context, config: Config): void {
   let stopped = false
   const timers: NodeJS.Timeout[] = []
   /**
+   * The local calendar day the check-in last ran for.
+   *
+   * A day-keyed guard rather than a fixed 24-hour interval: the host may stay
+   * up across midnight, and a monotonic interval drifts away from the local
+   * day it is meant to track. Compared with `toDateString()`, so a timezone or
+   * DST change moves the boundary with the user's clock.
+   */
+  let lastCheckInDay = new Date().toDateString()
+  /**
    * The account identity each variant last published a catalog for. Keeps a
    * same-identity token rotation from re-fetching, and lets a late response
    * from a previous identity be discarded instead of overwriting a newer one.
@@ -905,6 +940,7 @@ export function apply(ctx: Context, config: Config): void {
     const merged = (): Config => ({
       ...sources.cn().authFile === undefined ? {} : { authFile: sources.cn().authFile },
       ...sources.cn().probeConsent === undefined ? {} : { probeConsent: sources.cn().probeConsent },
+      ...sources.cn().autoCheckin === undefined ? {} : { autoCheckin: sources.cn().autoCheckin },
       ...sources.ai().authFileAI === undefined ? {} : { authFileAI: sources.ai().authFileAI },
       ...sources.ai().useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: sources.ai().useMaximumContextWindow },
     })
@@ -1093,6 +1129,61 @@ export function apply(ctx: Context, config: Config): void {
     for (const runtime of runtimes) await syncVariant(runtime)
   }
 
+  /**
+   * Claim today's check-in, once, for the CN variant.
+   *
+   * Only the CN provider owns a check-in campaign: the international product
+   * has no equivalent activity, and pointing its credential at the CN route
+   * would be a cross-product request. The gate is therefore the variant, not
+   * the region of whatever credential happens to be present.
+   *
+   * Every failure is contained. This runs from a startup path and from a daily
+   * timer, so a network error, a signed-out state, or an upstream change must
+   * never surface as an unhandled rejection inside the host — the result is
+   * logged and dropped, and the next scheduled run retries.
+   */
+  const runCheckIn = async (): Promise<void> => {
+    if (stopped || current().autoCheckin !== true) return
+    const runtime = runtimes.find(candidate => candidate.variant.id === CN_VARIANT.id)
+    if (runtime === undefined) return
+    try {
+      // `resolve()` refreshes an expired token first, so a long-idle host still
+      // has a usable credential by the time the claim is sent.
+      const credential = await runtime.store.resolve()
+      if (stopped) return
+      const result = await checkIn(credential)
+      if (stopped) return
+      const summary = `dsh-workbuddy-connect: check-in ${describeCheckIn(result)}`
+      if (result.state === 'failed') ctx.logger.warn(summary)
+      else ctx.logger.info(summary)
+    } catch (error: unknown) {
+      // A signed-out host throws here; that is the normal state for a machine
+      // whose desktop app has never been used, so it is not logged as a fault.
+      if (!stopped) ctx.logger.debug('dsh-workbuddy-connect: check-in skipped', error)
+    }
+  }
+
+  /**
+   * Claim once a day while the host stays up.
+   *
+   * The startup claim alone would miss the day boundary on a host left running
+   * for weeks, and a fixed 24-hour interval would drift away from local
+   * midnight. A short poll that fires only when the local calendar day has
+   * changed keeps the claim anchored to the day without depending on the host
+   * being restarted.
+   */
+  const startCheckInSchedule = (): void => {
+    void runCheckIn()
+    const timer = setInterval(() => {
+      const today = new Date().toDateString()
+      if (today === lastCheckInDay) return
+      lastCheckInDay = today
+      void runCheckIn()
+    }, CHECKIN_DAY_POLL_MS)
+    timer.unref?.()
+    timers.push(timer)
+  }
+
   void Promise.all(runtimes.map(async runtime => startVariant(ctx, runtime))).then(() => {
     if (stopped) return
     // The host bundle is live: write a heartbeat so the status CLI can report
@@ -1106,5 +1197,9 @@ export function apply(ctx: Context, config: Config): void {
     const timer = setInterval(() => { void syncAll() }, credentialPollMs())
     timer.unref?.()
     timers.push(timer)
+
+    // Started after the variants are up, so a signed-out host has already had
+    // its credential read attempted and the check-in does not race registration.
+    startCheckInSchedule()
   })
 }
